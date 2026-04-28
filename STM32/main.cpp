@@ -119,6 +119,10 @@ int datasentflag=0;
 uint16_t pwmData[24+LED_RES_BUFF_LEN];
 
 volatile int32_t recebido = 0;
+
+// valores dos lidares
+float FrontDist=0;
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -937,7 +941,7 @@ void StartTaskOdometry(void *argument)
 
         char msg[50];
         uint8_t len = sprintf(msg,"%.3f; %.3f, %.3f\n\r",odom_x,odom_y, odom_theta);
-        CDC_Transmit_FS(msg, len);
+        //CDC_Transmit_FS(msg, len);
         osDelay(100);
     }
 }
@@ -975,7 +979,15 @@ void StartTaskComms(void *argument)
 			{
 				// master request to write a value (value) to a specific address (add)
 				uint8_t add = comms_packet.address;
-				int32_t value=*((int32_t *)comms_packet.data);
+				float fvalue =*((float *)comms_packet.data);
+
+				if (add == 0x06){
+					FrontDist = fvalue;
+				}
+
+				char buff[100];
+				uint8_t len = sprintf(buff, "FrontDist = %.2f mm\r\n", FrontDist);
+				CDC_Transmit_FS((uint8_t*)buff, len);
 
 				// if(add == 0){
 				//	 AngularVelocity = value;
@@ -1065,6 +1077,11 @@ void moveMotorsTask(void *argument)
 	/* Infinite loop */
 	for(;;)
 	{
+
+		if(FrontDist < 100){
+			recebido='0';
+		}
+
 		if (recebido == 'w'){
 			HAL_GPIO_WritePin(M1_DIR_GPIO_Port, M1_DIR_Pin, GPIO_PIN_RESET); // esq  // frente -> m1=R, m2=S
 			HAL_GPIO_WritePin(M2_DIR_GPIO_Port, M2_DIR_Pin, GPIO_PIN_SET); // dir
