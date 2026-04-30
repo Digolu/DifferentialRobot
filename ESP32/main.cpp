@@ -37,6 +37,8 @@ float valorx, valory, valortheta;
 
 // Valores Lidar
 float medcentroid = 0;
+float DistEsq = 0;
+float DistDir = 0;
 
 // ─── Sensor VL53L7CX ─────────────────────────────────────────────────────────
 Adafruit_VL53L7CX vl53l7cx;
@@ -48,20 +50,19 @@ bool lidarOk = false;
 uint16_t distancias[4][4] = {0};
 
 // Função para calcular a média de todo o array de distâncias
-// coluna: 0=esquerda, 1=centro-esquerda, 2=centro-direita, 3=direita
-float mediaColuna(uint16_t dist[4][4], int coluna)
+float mediaLinha(uint16_t dist[4][4], int linha)
 {
     uint32_t soma = 0;
     int count = 0;
 
-    for (int row = 0; row < 4; row++) {
-        if (dist[row][coluna] > 0) {
-            soma += dist[row][coluna];
+    for (int coluna = 1; coluna < 3; coluna++) {
+        if (dist[linha][coluna] > 0) {
+            soma += dist[linha][coluna];
             count++;
         }
     }
-
     if (count == 0) return -1;
+    if ((float)soma / count < 0.0f) return 0.0f; 
     return (float)soma / count;
 }
 
@@ -76,6 +77,7 @@ TaskHandle_t Task1;
 TaskHandle_t TaskBootBtnHandler;
 TaskHandle_t TaskLidarHandler;
 
+
 // ─── Comunicações ────────────────────────────────────────────────────────────
 PacketHandler packetHandler;
 
@@ -85,7 +87,7 @@ AsyncWebServer server(80);
 WebSerial webSerial;
 
 // ─── WiFi ────────────────────────────────────────────────────────────────────
-const char *ssid     = "SE_robo";
+const char *ssid     = "SE_robo_RG";
 const char *password = "";
 const char *mdnsName = "robot";
 
@@ -245,6 +247,7 @@ void setup()
 // ─────────────────────────────────────────────────────────────────────────────
 void loop()
 {
+    xTaskNotifyGive(TaskLidarHandler);
     xTaskNotifyGive(Task1);
     delay(1000);
 
@@ -280,9 +283,10 @@ void loop()
         
         xSemaphoreGive(lidarMutex);
     }
-
-
-    webSerial.printf("Media centroid (col1+col2)/2 = %.2f mm\n", medcentroid);
+    webSerial.printf("Dist Mid = %.2f mm\n", medcentroid);
+    webSerial.printf("Dist Dir = %.2f mm\n", DistDir);
+    webSerial.printf("Dist Esq = %.2f mm\n", DistEsq);
+    
     webSerial.flush();
 }
 
@@ -306,24 +310,8 @@ void TaskReadLidar(void *parameter)
                     memcpy(&lidarResults, &tempResults, sizeof(VL53L7CX_ResultsData));
                     xSemaphoreGive(lidarMutex);
                 }
-
-                // Debug grelha 4x4 no Serial
-                for (int row = 0; row < 4; row++) {
-                    for (int col = 0; col < 4; col++) {
-                        int idx        = row * 4 + col;
-                        uint16_t dist = tempResults.distance_mm[idx];
-                        uint8_t status = tempResults.target_status[idx];
-                        if (status == 5 && dist > 0)
-                            Serial.printf("[%4d] ", dist);
-                        else
-                            Serial.printf("[----] ");
-                    }
-                    Serial.println();
-                }
-                Serial.println("---");
             }
         }
-
         vTaskDelay(pdMS_TO_TICKS(100));
     } 
 }
@@ -368,20 +356,31 @@ void Task1code(void *parameter)
             valory = *((float *)packetHandler.packet.data);
         }
 
-        // Distância do centroide (registo 6)
-        float col1 = mediaColuna(distancias, 1);
-        float col2 = mediaColuna(distancias, 2); 
+        float col1 = mediaLinha(distancias, 1);
+        float col2 = mediaLinha(distancias, 2); 
         medcentroid = (col1 + col2) / 2.0;
-        if (medcentroid < 0) medcentroid = 0; 
 
         packetHandler.buildPacket(COMMS_TYPE_WRITE, 6, (uint8_t *)&medcentroid);
         transferReceivePackets(&packetHandler.packet);
 
         if (packetHandler.isPacketValid() && packetHandler.packet.packet_type != COMMS_TYPE_ERR) {
-            Serial.printf("Write registo 6 enviado: %.2f mm\n", medcentroid);   
+            //Serial.printf("Write registo 6 enviado: %.2f mm\n", medcentroid);   
         }
         vTaskDelay(pdMS_TO_TICKS(10));
 
+        // Distância esquerda
+        DistEsq = mediaLinha(distancias, 0);
+        
+        packetHandler.buildPacket(COMMS_TYPE_WRITE, 7, (uint8_t *)&DistEsq);
+        transferReceivePackets(&packetHandler.packet);
+        vTaskDelay(pdMS_TO_TICKS(10));
+
+        // Distância direita
+        DistDir = mediaLinha(distancias, 3); 
+        
+        packetHandler.buildPacket(COMMS_TYPE_WRITE, 8, (uint8_t *)&DistDir);
+        transferReceivePackets(&packetHandler.packet);
+        vTaskDelay(pdMS_TO_TICKS(10));
 
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     }
