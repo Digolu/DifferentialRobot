@@ -66,35 +66,30 @@ float mediaLinha(uint16_t dist[4][4], int linha)
     return (float)soma / count;
 }
 
-// ─── Protótipos ──────────────────────────────────────────────────────────────
 void Task1code(void *parameter);
 void TaskBootBtnCode(void *parameter);
 void TaskReadLidar(void *parameter);
 void transferReceivePackets(comms_packet_t *packet);
+void TaskWebSerial(void *parameter);
 
-// ─── Handles de tasks ────────────────────────────────────────────────────────
 TaskHandle_t Task1;
 TaskHandle_t TaskBootBtnHandler;
 TaskHandle_t TaskLidarHandler;
+TaskHandle_t TaskWebSerialHandler;
 
-
-// ─── Comunicações ────────────────────────────────────────────────────────────
 PacketHandler packetHandler;
 
-// ─── Periféricos ─────────────────────────────────────────────────────────────
 Adafruit_NeoPixel rgbLed(1, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 AsyncWebServer server(80);
 WebSerial webSerial;
 
-// ─── WiFi ────────────────────────────────────────────────────────────────────
 const char *ssid     = "SE_robo_RG";
 const char *password = "";
 const char *mdnsName = "robot";
 
-uint8_t cmd = 0;
+volatile uint8_t cmd = 0;
 
 
-// ─────────────────────────────────────────────────────────────────────────────
 void setup()
 {
     // ── Serial primeiro para não perder mensagens ─────────────────────────────
@@ -214,7 +209,6 @@ void setup()
     }
     MDNS.addService("_http", "_tcp", 80);
 
-    // ── Task de comunicacao SPI ──────────────────────────────────────────────
     xTaskCreatePinnedToCore(
         Task1code,
         "Task1",
@@ -224,11 +218,23 @@ void setup()
         &Task1,
         1); // Core 1
 
-    // ── WebSerial ────────────────────────────────────────────────────────────
+
+    xTaskCreatePinnedToCore(
+        TaskWebSerial,
+        "TaskWebSerial",
+        4096,
+        NULL,
+        0,          
+        &TaskWebSerialHandler,
+    1);         
+
     webSerial.onMessage([](const std::string &msg) {
         cmd = msg[0];
         xTaskNotifyGive(Task1);
     });
+
+    xTaskNotifyGive(Task1);
+
     webSerial.begin(&server);
     webSerial.setBuffer(100);
 
@@ -247,48 +253,54 @@ void setup()
 // ─────────────────────────────────────────────────────────────────────────────
 void loop()
 {
-    xTaskNotifyGive(TaskLidarHandler);
-    xTaskNotifyGive(Task1);
+    xTaskNotifyGive(TaskWebSerialHandler);
     delay(1000);
-
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-
-    int horas    = (tv.tv_sec / 3600) % 24;
-    int minutos  = (tv.tv_sec / 60) % 60;
-    int segundos =  tv.tv_sec % 60;
-
-    webSerial.printf("------------------------------------------------------------------------------\n");
-    webSerial.printf("[%02d:%02d:%02d] x= %.2f mm | y= %.2f mm | theta= %.4f rad\n",
-                     horas, minutos, segundos,
-                     valorx, valory, valortheta);
-
-    // Imprimir grelha 4x4 de distancias no webSerial
-    if (lidarOk && lidarMutex != NULL &&
-        xSemaphoreTake(lidarMutex, pdMS_TO_TICKS(10)) == pdTRUE)
-    {
-        webSerial.printf("LIDAR 4x4 (mm):\n");
-        for (int row = 0; row < 4; row++) {
-            for (int col = 0; col < 4; col++) {
-                int idx        = row * 4 + col;
-                int16_t dist   = lidarResults.distance_mm[idx];
-                uint8_t status = lidarResults.target_status[idx];
-                if (status == 5 && dist > 0)
-                    webSerial.printf("[%4d] ", dist);
-                else
-                    webSerial.printf("[----] ");
-            }
-            webSerial.printf("\n");
-        }
-        
-        xSemaphoreGive(lidarMutex);
-    }
-    webSerial.printf("Dist Mid = %.2f mm\n", medcentroid);
-    webSerial.printf("Dist Dir = %.2f mm\n", DistDir);
-    webSerial.printf("Dist Esq = %.2f mm\n", DistEsq);
-    
-    webSerial.flush();
 }
+
+void TaskWebSerial(void *parameter)
+{
+    for (;;){
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        int horas    = (tv.tv_sec / 3600) % 24;
+        int minutos  = (tv.tv_sec / 60) % 60;
+        int segundos =  tv.tv_sec % 60;
+
+        webSerial.printf("------------------------------------------------------------------------------\n");
+        webSerial.printf("[%02d:%02d:%02d] x= %.2f mm | y= %.2f mm | theta= %.4f rad\n",
+                        horas, minutos, segundos,
+                        valorx, valory, valortheta);
+
+        // Imprimir grelha 4x4 de distancias no webSerial
+        if (lidarOk && lidarMutex != NULL &&
+            xSemaphoreTake(lidarMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+        {
+            webSerial.printf("LIDAR 4x4 (mm):\n");
+            for (int row = 0; row < 4; row++) {
+                for (int col = 0; col < 4; col++) {
+                    int idx        = row * 4 + col;
+                    int16_t dist   = lidarResults.distance_mm[idx];
+                    uint8_t status = lidarResults.target_status[idx];
+                    if (status == 5 && dist > 0)
+                        webSerial.printf("[%4d] ", dist);
+                    else
+                        webSerial.printf("[----] ");
+                }
+                webSerial.printf("\n");
+            }
+            
+            xSemaphoreGive(lidarMutex);
+        }
+        webSerial.printf("Dist Mid = %.2f mm\n", medcentroid);
+        webSerial.printf("Dist Dir = %.2f mm\n", DistDir);
+        webSerial.printf("Dist Esq = %.2f mm\n", DistEsq);
+        
+        webSerial.flush();
+    }
+}
+
 
 // ─── Task: leitura continua do LIDAR ────────────────────────────────────────
 void TaskReadLidar(void *parameter)
@@ -382,7 +394,6 @@ void Task1code(void *parameter)
         transferReceivePackets(&packetHandler.packet);
         vTaskDelay(pdMS_TO_TICKS(10));
 
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     }
 }
 
